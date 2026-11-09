@@ -34,6 +34,18 @@ can slice it instead of copying. Strings are validated with `Utf8.IsValid` and d
 `OscPacket.TryParseCore` recurses per bundle element with a shared element counter and depth, applying
 `OscReaderOptions` limits.
 
+**Opaque tails stop at the first unknown tag.** `OscUnknownTypeTagHandling.AcceptOpaque` exists for gateways that
+route on the address and forward the bytes. An unknown tag's size is by definition unknown, so nothing after it can
+be framed: the reader cannot find the next argument, so it does not try. It keeps the arguments decoded so far and
+treats the tag, every later tag and every remaining byte as one verbatim tail (`OscMessage.OpaqueTypeTags` and
+`OpaqueArguments`), which `WriteCore` re-emits after the known tags and arguments so the message round-trips byte for
+byte. Known tags after the unknown one are deliberately *not* decoded, because their offsets depend on the unknown
+tag's size. Inside an array the same reasoning means the closing bracket cannot be located, so an unknown element
+tag stays `UnsupportedTypeTag`. The tail obeys the blob ownership rule: sliced from a `ReadOnlyMemory<byte>` source,
+copied from a span. `OscPacket.TryValidate` is a second, allocation-free walk (`OscReader.TrySkipValue` mirrors
+`TryReadValue` case for case) rather than `TryParse` with the model discarded; the two switches must list the same
+tags, and the malformed-packet tests assert they agree on every vector.
+
 **Strings are UTF-8 both ways.** OSC 1.0 says ASCII; Ventuz Remoting and most peers send UTF-8, which is a superset.
 `OscWriterOptions.AsciiOnly` exists for strict peers, and `OscWriterOptions.VentuzNode` turns it on because the Ventuz
 node library decodes with `Encoding.ASCII`.
@@ -128,14 +140,19 @@ does) or, when only a bound IPv4 address is given, from that address as a 4-byte
 
 ## Testing
 
-MSTest, 68 tests as of 2026-11-08: the two OSC 1.0 specification examples byte for byte, round trips of every type,
+MSTest, 78 tests as of 2026-11-08: the two OSC 1.0 specification examples byte for byte, round trips of every type,
 UTF-8 and ASCII-only, `TryWrite` sizing, streaming writer parity, raw reader access, bundles including the Ventuz
 capture from Soundling (`/sound/strike/play` in an immediate bundle), nested bundles, malformed inputs for each
 `OscParseError`, depth and element limits, Remoting arrays, escapes and bit vectors, node-library `BEUC`/`PNGI`
 blobs, ARGB colours and the `M` tag, time tag conversions, stream framing over spans and multi-segment sequences,
 `OscStreamConnection` over loopback TCP in both framings (coalesced and split writes, clean close, truncated frame,
 oversized prefix), and loopback UDP with packet information, malformed counting, cancellation and per-call
-destinations.
+destinations. Relaxed validation: `AcceptOpaque` round trips (span copy versus memory slice, empty tails,
+tails from the first tag), unknown tags inside standard and Ventuz arrays still rejected, a bundle mixing ordinary
+and opaque messages, the raw reader's stop position, and a table of every malformed vector plus valid packets on
+which `TryValidate` must agree with `TryParse` (the malformed-packet helper also cross-checks `TryValidate` on each
+vector it rejects). UDP: raw `Send`/`SendAsync` to a per-call destination and `OscUdpSenderOptions.ForLocalAddress`
+on the loopback adapter.
 
 **Soundling validation (2026-11-08).** The Soundling service was migrated onto this library through a local
 `ProjectReference` (its `OscMessage.cs`/`OscPacket.cs` deleted; `OscDatagram.cs` holds its limits and the

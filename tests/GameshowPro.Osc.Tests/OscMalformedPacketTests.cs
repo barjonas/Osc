@@ -3,11 +3,14 @@ namespace GameshowPro.Osc.Tests;
 [TestClass]
 public sealed class OscMalformedPacketTests
 {
+    /// <summary>Asserts the packet is rejected and that the allocation-free <see cref="OscPacket.TryValidate"/> rejects it for the same reason.</summary>
     private static OscParseError ErrorOf(byte[] packet, OscReaderOptions? options = null)
     {
         Assert.IsFalse(OscPacket.TryParse(packet, out OscPacket? parsed, out OscParseError error, options));
         Assert.IsNull(parsed);
         Assert.AreNotEqual(OscParseError.None, error);
+        Assert.IsFalse(OscPacket.TryValidate(packet, out OscParseError validateError, options));
+        Assert.AreEqual(error, validateError, "TryValidate must report the same error as TryParse.");
         return error;
     }
 

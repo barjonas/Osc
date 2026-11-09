@@ -105,6 +105,61 @@ public sealed class OscUdpTests
     }
 
     [TestMethod]
+    public async Task RawDatagramsGoToThePerCallDestination()
+    {
+        using OscUdpReceiver defaultTarget = new(new IPEndPoint(IPAddress.Loopback, 0));
+        using OscUdpReceiver other = new(new IPEndPoint(IPAddress.Loopback, 0));
+        using OscUdpSender sender = new(defaultTarget.LocalEndPoint);
+        using CancellationTokenSource timeout = new(s_timeout);
+        Assert.AreNotEqual(sender.RemoteEndPoint.Port, other.LocalEndPoint.Port);
+
+        byte[] sync = new OscMessage("/raw/sync", 1).ToArray();
+        byte[] async = new OscMessage("/raw/async", 2).ToArray();
+        sender.Send(sync, other.LocalEndPoint);
+        await sender.SendAsync(async, other.LocalEndPoint, timeout.Token);
+        // Nothing above went to the default destination, so this marker is the first datagram it sees.
+        sender.Send(new OscMessage("/marker"));
+
+        OscReceivedDatagram first = await other.Receive(timeout.Token);
+        OscReceivedDatagram second = await other.Receive(timeout.Token);
+        Assert.AreEqual(sync.Length + async.Length, first.Length + second.Length);
+        OscPacket[] received = [first.Packet!, second.Packet!];
+        OscPacket[] expected = [OscPacket.Parse(sync), OscPacket.Parse(async)];
+        CollectionAssert.AreEquivalent(expected, received);
+        Assert.AreEqual("/marker", ((OscMessage)(await defaultTarget.Receive(timeout.Token)).Packet!).Address);
+
+        _ = Assert.ThrowsExactly<ArgumentNullException>(() => sender.Send(sync, null!));
+        _ = await Assert.ThrowsExactlyAsync<ArgumentNullException>(async () => await sender.SendAsync(async, null!, timeout.Token));
+    }
+
+    [TestMethod]
+    public void ForLocalAddressBindsTheAdapterAddressAndNamesTheInterface()
+    {
+        NetworkInterface? loopback = NetworkInterface.GetAllNetworkInterfaces()
+            .FirstOrDefault(nic => nic.NetworkInterfaceType == NetworkInterfaceType.Loopback && nic.Supports(NetworkInterfaceComponent.IPv4));
+        if (loopback is null)
+        {
+            Assert.Inconclusive("This host has no IPv4 loopback adapter.");
+        }
+        IPAddress address = loopback.GetIPProperties().UnicastAddresses
+            .First(a => a.Address.AddressFamily == AddressFamily.InterNetwork).Address;
+
+        OscUdpSenderOptions options = OscUdpSenderOptions.ForLocalAddress(address, loopback);
+        Assert.IsNotNull(options.LocalEndPoint);
+        IPEndPoint local = options.LocalEndPoint;
+        Assert.AreEqual(IPAddress.Loopback, local.Address);
+        Assert.AreEqual(0, local.Port);
+        Assert.AreSame(loopback, options.MulticastInterface);
+        Assert.AreEqual(OscUdpSenderOptions.Default.Writer, options.Writer);
+
+        using OscUdpSender sender = new(new IPEndPoint(IPAddress.Loopback, 9), options);
+        Assert.AreEqual(IPAddress.Loopback, ((IPEndPoint)sender.LocalEndPoint!).Address);
+
+        _ = Assert.ThrowsExactly<ArgumentNullException>(() => OscUdpSenderOptions.ForLocalAddress(null!, loopback));
+        _ = Assert.ThrowsExactly<ArgumentNullException>(() => OscUdpSenderOptions.ForLocalAddress(address, null!));
+    }
+
+    [TestMethod]
     public void OversizedPacketsAreRefusedBeforeSending()
     {
         using OscUdpSender sender = new(new IPEndPoint(IPAddress.Loopback, 9));

@@ -38,12 +38,23 @@ OscPacket parsed = OscPacket.Parse(wire);
 Packets also write into a caller-owned buffer with `GetByteCount()` and `TryWrite(Span<byte>, out int)`, into an
 `IBufferWriter<byte>` with `Write(...)`, and parse without throwing through `TryParse`.
 
+**Relaxed validation.** A type tag this library does not know is a parse error by default. A gateway that only
+routes and forwards can set `OscReaderOptions.UnknownTypeTags = OscUnknownTypeTagHandling.AcceptOpaque`: decoding
+then stops at the first unknown top-level tag, the arguments before it are decoded as usual, and the rest of the
+message is kept verbatim as `OscMessage.OpaqueTypeTags` and `OpaqueArguments`, so `ToArray()` still reproduces the
+datagram byte for byte. `OscPacket.TryValidate(bytes, out error, options)` walks the same structure as `TryParse`
+without allocating a value or a string, for a gate that checks and forwards raw bytes.
+
 ### UDP
 
 ```csharp
 // Send to a unicast destination; the OS picks the interface from its routing table.
 using OscUdpSender sender = new(new IPEndPoint(IPAddress.Parse("192.168.1.20"), 8000));
 await sender.SendAsync(play, cancellationToken);
+
+// Forward bytes you already have, to the default destination or to another one (for example a reply).
+await sender.SendAsync(datagramBytes, cancellationToken);
+await sender.SendAsync(datagramBytes, replyEndPoint, cancellationToken);
 
 // Receive on every interface. Each datagram carries its sender, destination address and ingress interface.
 using OscUdpReceiver receiver = new(new IPEndPoint(IPAddress.Any, 8000));
@@ -76,6 +87,11 @@ using OscUdpSender multicastSender = new(new IPEndPoint(IPAddress.Parse("239.0.0
     MulticastTimeToLive = 1,
 });
 multicastSender.Send(play);
+
+// The same two settings in one call: bind the address (unicast and broadcast leave by that adapter) and
+// set IP_MULTICAST_IF to the interface (multicast does too). Add TTL or a dialect with a `with` expression.
+using OscUdpSender fromNic = new(new IPEndPoint(IPAddress.Parse("192.168.1.20"), 8000),
+    OscUdpSenderOptions.ForLocalAddress(nicAddress, nic) with { MulticastTimeToLive = 1 });
 
 // Listen for unicast on one adapter only: bind its address.
 using OscUdpReceiver unicastReceiver = new(new IPEndPoint(nicAddress, 8000));

@@ -14,6 +14,7 @@ public ref struct OscReader
     private readonly ReadOnlySpan<byte> _data;
     private readonly ReadOnlyMemory<byte> _memory;
     private int _position;
+    private bool _stoppedAtUnknownTag;
 
     /// <summary>Reads from a span. Blob values are copied out of the span when a model is built.</summary>
     public OscReader(ReadOnlySpan<byte> data, OscReaderOptions? options = null)
@@ -206,8 +207,23 @@ public ref struct OscReader
     }
 
     /// <summary>Reads every argument described by <paramref name="typeTags"/> (without the comma).</summary>
+    /// <remarks>
+    /// Under <see cref="OscUnknownTypeTagHandling.AcceptOpaque"/> decoding stops at the first unknown top-level
+    /// tag and this returns true with the arguments read so far, leaving the rest of the message in
+    /// <see cref="Unread"/>. Use the overload with <c>opaqueTypeTags</c> to learn where it stopped.
+    /// </remarks>
     public bool TryReadArguments(ReadOnlySpan<byte> typeTags, out ImmutableArray<OscValue> arguments)
+        => TryReadArguments(typeTags, out arguments, out _);
+
+    /// <summary>
+    /// Reads every argument described by <paramref name="typeTags"/> (without the comma). Under
+    /// <see cref="OscUnknownTypeTagHandling.AcceptOpaque"/> decoding stops at the first unknown top-level tag:
+    /// <paramref name="opaqueTypeTags"/> then holds that tag and every tag after it, and <see cref="Unread"/>
+    /// holds the bytes they describe. Otherwise <paramref name="opaqueTypeTags"/> is empty.
+    /// </summary>
+    public bool TryReadArguments(ReadOnlySpan<byte> typeTags, out ImmutableArray<OscValue> arguments, out ReadOnlySpan<byte> opaqueTypeTags)
     {
+        opaqueTypeTags = default;
         if (typeTags.IsEmpty)
         {
             arguments = [];
@@ -220,6 +236,11 @@ public ref struct OscReader
         {
             if (!TryReadValue(typeTags, ref index, inArray: false, out OscValue value))
             {
+                if (ConsumeUnknownTagStop())
+                {
+                    opaqueTypeTags = typeTags[index..];
+                    break;
+                }
                 arguments = default;
                 return false;
             }
@@ -233,8 +254,49 @@ public ref struct OscReader
     /// Reads the argument for the tag at <paramref name="typeTags"/>[<paramref name="index"/>] and advances
     /// <paramref name="index"/> past it, including over a whole array.
     /// </summary>
+    /// <remarks>
+    /// A single value has no "rest of the message" to keep opaque, so an unknown tag fails with
+    /// <see cref="OscParseError.UnsupportedTypeTag"/> whatever <see cref="OscReaderOptions.UnknownTypeTags"/>
+    /// says; <see cref="TryReadArguments(ReadOnlySpan{byte}, out ImmutableArray{OscValue}, out ReadOnlySpan{byte})"/>
+    /// applies that option.
+    /// </remarks>
     public bool TryReadValue(ReadOnlySpan<byte> typeTags, ref int index, out OscValue value)
-        => TryReadValue(typeTags, ref index, inArray: false, out value);
+    {
+        if (TryReadValue(typeTags, ref index, inArray: false, out value))
+        {
+            return true;
+        }
+        if (ConsumeUnknownTagStop())
+        {
+            index++;
+            _ = Fail(OscParseError.UnsupportedTypeTag);
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Walks every argument described by <paramref name="typeTags"/>, checking each one's framing without
+    /// building a value or decoding a string. Stops at an unknown top-level tag exactly as
+    /// <see cref="TryReadArguments(ReadOnlySpan{byte}, out ImmutableArray{OscValue}, out ReadOnlySpan{byte})"/> does.
+    /// </summary>
+    internal bool TrySkipArguments(ReadOnlySpan<byte> typeTags, out ReadOnlySpan<byte> opaqueTypeTags)
+    {
+        opaqueTypeTags = default;
+        int index = 0;
+        while (index < typeTags.Length)
+        {
+            if (!TrySkipValue(typeTags, ref index, inArray: false))
+            {
+                if (ConsumeUnknownTagStop())
+                {
+                    opaqueTypeTags = typeTags[index..];
+                    return true;
+                }
+                return false;
+            }
+        }
+        return true;
+    }
 
     private bool TryReadValue(ReadOnlySpan<byte> typeTags, ref int index, bool inArray, out OscValue value)
     {
@@ -348,8 +410,112 @@ public ref struct OscReader
             case (byte)OscTypeTag.ArrayEnd:
                 return Fail(OscParseError.InvalidArray);
             default:
-                return Fail(OscParseError.UnsupportedTypeTag);
+                return FailUnknownTag(ref index, inArray);
         }
+    }
+
+    /// <summary>The framing-only counterpart of <see cref="TryReadValue(ReadOnlySpan{byte}, ref int, bool, out OscValue)"/>; the two switches must list the same tags.</summary>
+    private bool TrySkipValue(ReadOnlySpan<byte> typeTags, ref int index, bool inArray)
+    {
+        if ((uint)index >= (uint)typeTags.Length)
+        {
+            return Fail(OscParseError.InvalidArray);
+        }
+        byte tag = typeTags[index++];
+        switch (tag)
+        {
+            case (byte)OscTypeTag.Int32:
+            case (byte)OscTypeTag.Float32:
+            case (byte)OscTypeTag.Char:
+            case (byte)OscTypeTag.Color:
+            case (byte)OscTypeTag.Midi:
+            case (byte)'M':
+                return TryReadInt32(out _);
+            case (byte)OscTypeTag.Int64:
+            case (byte)OscTypeTag.TimeTag:
+            case (byte)OscTypeTag.Double:
+                return TryReadInt64(out _);
+            case (byte)OscTypeTag.String:
+            case (byte)OscTypeTag.Symbol:
+                return TryReadString(out _);
+            case (byte)OscTypeTag.Blob:
+            case (byte)OscTypeTag.BitVector: // Every well-framed blob is a valid bit vector, so framing is the whole check.
+                return TryReadBlob(out _);
+            case (byte)OscTypeTag.True:
+            case (byte)OscTypeTag.False:
+            case (byte)OscTypeTag.Nil:
+            case (byte)OscTypeTag.Infinitum:
+                return true;
+            case (byte)OscTypeTag.ArrayBegin:
+                return Options.ArrayEncoding == OscArrayEncoding.VentuzRemoting
+                    ? TrySkipVentuzArray(typeTags, ref index, inArray)
+                    : TrySkipStandardArray(typeTags, ref index);
+            case (byte)OscTypeTag.ArrayEnd:
+                return Fail(OscParseError.InvalidArray);
+            default:
+                return FailUnknownTag(ref index, inArray);
+        }
+    }
+
+    /// <summary>
+    /// An unknown tag ends decoding under <see cref="OscUnknownTypeTagHandling.AcceptOpaque"/>, but only at the
+    /// top level: inside an array the closing bracket cannot be found without knowing every element's size.
+    /// </summary>
+    private bool FailUnknownTag(ref int index, bool inArray)
+    {
+        if (!inArray && Options.UnknownTypeTags == OscUnknownTypeTagHandling.AcceptOpaque)
+        {
+            // Leave the tag in place: it and everything after it belong to the opaque tail.
+            index--;
+            _stoppedAtUnknownTag = true;
+            return false;
+        }
+        return Fail(OscParseError.UnsupportedTypeTag);
+    }
+
+    private bool ConsumeUnknownTagStop()
+    {
+        bool stopped = _stoppedAtUnknownTag;
+        _stoppedAtUnknownTag = false;
+        return stopped;
+    }
+
+    private bool TrySkipStandardArray(ReadOnlySpan<byte> typeTags, ref int index)
+    {
+        while (true)
+        {
+            if (index >= typeTags.Length)
+            {
+                return Fail(OscParseError.InvalidArray);
+            }
+            if (typeTags[index] == (byte)OscTypeTag.ArrayEnd)
+            {
+                index++;
+                return true;
+            }
+            if (!TrySkipValue(typeTags, ref index, inArray: true))
+            {
+                return false;
+            }
+        }
+    }
+
+    private bool TrySkipVentuzArray(ReadOnlySpan<byte> typeTags, ref int index, bool inArray)
+    {
+        if (!TryReadVentuzArrayHeader(typeTags, ref index, inArray, out int count))
+        {
+            return false;
+        }
+        ReadOnlySpan<byte> elementTags = typeTags.Slice(index - 2, 1);
+        for (int i = 0; i < count; i++)
+        {
+            int elementIndex = 0;
+            if (!TrySkipValue(elementTags, ref elementIndex, inArray: true))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private bool TryReadStandardArray(ReadOnlySpan<byte> typeTags, ref int index, out OscValue value)
@@ -385,26 +551,13 @@ public ref struct OscReader
     private bool TryReadVentuzArray(ReadOnlySpan<byte> typeTags, ref int index, bool inArray, out OscValue value)
     {
         value = default;
-        if (inArray || typeTags.Length - index < 2 || typeTags[index + 1] != (byte)OscTypeTag.ArrayEnd)
-        {
-            return Fail(OscParseError.InvalidArray);
-        }
-        byte elementTag = typeTags[index];
-        if (elementTag is (byte)OscTypeTag.ArrayBegin or (byte)OscTypeTag.Nil)
-        {
-            return Fail(OscParseError.InvalidArray);
-        }
-        index += 2;
-        if (!TryReadInt32(out _) || !TryReadInt32(out int count))
+        if (!TryReadVentuzArrayHeader(typeTags, ref index, inArray, out int count))
         {
             return false;
         }
-        if (count < 0 || count > Remaining)
-        {
-            return Fail(OscParseError.InvalidArray);
-        }
-        ImmutableArray<OscValue>.Builder builder = ImmutableArray.CreateBuilder<OscValue>(count);
         ReadOnlySpan<byte> elementTags = typeTags.Slice(index - 2, 1);
+        byte elementTag = elementTags[0];
+        ImmutableArray<OscValue>.Builder builder = ImmutableArray.CreateBuilder<OscValue>(count);
         for (int i = 0; i < count; i++)
         {
             int elementIndex = 0;
@@ -415,6 +568,30 @@ public ref struct OscReader
             builder.Add(element);
         }
         value = OscValue.FromArray(builder.DrainToImmutable(), (OscTypeTag)elementTag);
+        return true;
+    }
+
+    /// <summary>Validates the <c>[x]</c> tags of a Ventuz array, advances past them and reads the two count words.</summary>
+    private bool TryReadVentuzArrayHeader(ReadOnlySpan<byte> typeTags, ref int index, bool inArray, out int count)
+    {
+        count = 0;
+        if (inArray || typeTags.Length - index < 2 || typeTags[index + 1] != (byte)OscTypeTag.ArrayEnd)
+        {
+            return Fail(OscParseError.InvalidArray);
+        }
+        if (typeTags[index] is (byte)OscTypeTag.ArrayBegin or (byte)OscTypeTag.Nil)
+        {
+            return Fail(OscParseError.InvalidArray);
+        }
+        index += 2;
+        if (!TryReadInt32(out _) || !TryReadInt32(out count))
+        {
+            return false;
+        }
+        if (count < 0 || count > Remaining)
+        {
+            return Fail(OscParseError.InvalidArray);
+        }
         return true;
     }
 

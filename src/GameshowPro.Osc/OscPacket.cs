@@ -116,10 +116,21 @@ public abstract class OscPacket
         }
     }
 
-    private static bool TryParseCore(ReadOnlySpan<byte> data, ReadOnlyMemory<byte> memory, OscReaderOptions options, int depth,
-        ref int elementCount, [NotNullWhen(true)] out OscPacket? packet, out OscParseError error)
+    /// <summary>
+    /// Checks that <paramref name="data"/> is a well-formed packet under <paramref name="options"/> without building
+    /// a model: the same structure <see cref="TryParse(ReadOnlySpan{byte}, out OscPacket?, out OscParseError, OscReaderOptions?)"/>
+    /// walks (bundles recursively, addresses, type tags and every argument's framing) and the same
+    /// <see cref="OscParseError"/>, but no value or string is allocated. Useful for a gate that forwards raw bytes.
+    /// </summary>
+    public static bool TryValidate(ReadOnlySpan<byte> data, out OscParseError error, OscReaderOptions? options = null)
     {
-        packet = null;
+        int elements = 0;
+        return TryValidateCore(data, options ?? OscReaderOptions.Default, 1, ref elements, out error);
+    }
+
+    /// <summary>Checks the length and element-count rules shared by parsing and validation.</summary>
+    private static bool CheckPacketFrame(ReadOnlySpan<byte> data, OscReaderOptions options, int depth, ref int elementCount, out OscParseError error)
+    {
         if (data.Length < OscBinary.MinimumMessageLength)
         {
             error = OscParseError.EmptyPacket;
@@ -134,6 +145,84 @@ public abstract class OscPacket
         if (depth > 1 && ++elementCount > options.MaxBundleElements)
         {
             error = OscParseError.TooManyElements;
+            return false;
+        }
+        error = OscParseError.None;
+        return true;
+    }
+
+    /// <summary>
+    /// Checks the bytes after the decoded arguments: nothing may remain for an ordinary message, and an opaque
+    /// tail must keep the message a multiple of four bytes.
+    /// </summary>
+    private static bool CheckMessageTail(int remaining, ReadOnlySpan<byte> opaqueTypeTags, out OscParseError error)
+    {
+        if (opaqueTypeTags.IsEmpty)
+        {
+            if (remaining != 0)
+            {
+                error = OscParseError.TrailingData;
+                return false;
+            }
+        }
+        else if (remaining % 4 != 0)
+        {
+            error = OscParseError.InvalidLength;
+            return false;
+        }
+        error = OscParseError.None;
+        return true;
+    }
+
+    private static bool TryValidateCore(ReadOnlySpan<byte> data, OscReaderOptions options, int depth, ref int elementCount, out OscParseError error)
+    {
+        if (!CheckPacketFrame(data, options, depth, ref elementCount, out error))
+        {
+            return false;
+        }
+        OscReader reader = new(data, options);
+        if (reader.IsAtBundle)
+        {
+            if (depth > options.MaxBundleDepth)
+            {
+                error = OscParseError.BundleTooDeep;
+                return false;
+            }
+            if (!reader.TryReadBundleHeader(out _))
+            {
+                error = reader.Error;
+                return false;
+            }
+            while (reader.Remaining > 0)
+            {
+                if (!reader.TryReadBundleElement(out ReadOnlySpan<byte> element))
+                {
+                    error = reader.Error;
+                    return false;
+                }
+                if (!TryValidateCore(element, options, depth + 1, ref elementCount, out error))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (!reader.TryReadAddress(out _)
+            || !reader.TryReadTypeTags(out ReadOnlySpan<byte> typeTags)
+            || !reader.TrySkipArguments(typeTags, out ReadOnlySpan<byte> opaqueTypeTags))
+        {
+            error = reader.Error;
+            return false;
+        }
+        return CheckMessageTail(reader.Remaining, opaqueTypeTags, out error);
+    }
+
+    private static bool TryParseCore(ReadOnlySpan<byte> data, ReadOnlyMemory<byte> memory, OscReaderOptions options, int depth,
+        ref int elementCount, [NotNullWhen(true)] out OscPacket? packet, out OscParseError error)
+    {
+        packet = null;
+        if (!CheckPacketFrame(data, options, depth, ref elementCount, out error))
+        {
             return false;
         }
         OscReader reader = memory.IsEmpty ? new(data, options) : new(memory, options);
@@ -171,17 +260,25 @@ public abstract class OscPacket
         {
             if (!reader.TryReadAddress(out ReadOnlySpan<byte> address)
                 || !reader.TryReadTypeTags(out ReadOnlySpan<byte> typeTags)
-                || !reader.TryReadArguments(typeTags, out ImmutableArray<OscValue> arguments))
+                || !reader.TryReadArguments(typeTags, out ImmutableArray<OscValue> arguments, out ReadOnlySpan<byte> opaqueTypeTags))
             {
                 error = reader.Error;
                 return false;
             }
-            if (reader.Remaining != 0)
+            if (!CheckMessageTail(reader.Remaining, opaqueTypeTags, out error))
             {
-                error = OscParseError.TrailingData;
                 return false;
             }
-            packet = new OscMessage(Encoding.UTF8.GetString(address), arguments);
+            if (opaqueTypeTags.IsEmpty)
+            {
+                packet = new OscMessage(Encoding.UTF8.GetString(address), arguments);
+            }
+            else
+            {
+                // The tail follows the ownership rule for blobs: slice the caller's memory when there is one, otherwise copy.
+                ReadOnlyMemory<byte> tail = memory.IsEmpty ? reader.Unread.ToArray() : memory.Slice(reader.Position, reader.Remaining);
+                packet = new OscMessage(Encoding.UTF8.GetString(address), arguments, Encoding.ASCII.GetString(opaqueTypeTags), tail);
+            }
         }
         error = OscParseError.None;
         return true;

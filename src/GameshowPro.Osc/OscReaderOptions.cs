@@ -9,6 +9,13 @@ public sealed record OscReaderOptions
     public OscArrayEncoding ArrayEncoding { get; init; }
 
     /// <summary>
+    /// Whether a type tag this library does not know makes the packet malformed (<see cref="OscUnknownTypeTagHandling.Reject"/>,
+    /// the default) or ends argument decoding and keeps the rest of the message as an opaque tail
+    /// (<see cref="OscUnknownTypeTagHandling.AcceptOpaque"/>).
+    /// </summary>
+    public OscUnknownTypeTagHandling UnknownTypeTags { get; init; }
+
+    /// <summary>
     /// Deepest bundle nesting accepted. A bare message or a bundle of messages is depth 1. Defaults to 8.
     /// </summary>
     public int MaxBundleDepth

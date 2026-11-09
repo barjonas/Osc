@@ -94,7 +94,12 @@ copying.
 
 `OscReaderOptions` sets `ArrayEncoding`, `MaxBundleDepth` (default 8; a bundle of messages is depth 1) and
 `MaxBundleElements` (default 1024: every message and bundle inside the outermost packet, across all nesting levels).
-Both limits protect a receiver from hostile datagrams.
+Both limits protect a receiver from hostile datagrams. `UnknownTypeTags` chooses between rejecting a type tag the
+library does not know (`Reject`, the default) and `AcceptOpaque`, which decodes the arguments before the first
+unknown top-level tag and keeps the rest of the message verbatim in `OscMessage.OpaqueTypeTags` and
+`OpaqueArguments`; such a message still encodes byte for byte, and `TypeTags` includes the opaque tags. An unknown
+tag inside an array is always rejected. `OscPacket.TryValidate(bytes, out error, options)` checks the same structure
+as `TryParse` without allocating anything.
 
 `EnumerateMessages()` on any packet yields its messages in wire order (a bare message yields itself), so a receiver
 can treat messages and bundles alike; `OscBundle.IsImmediate` is true only when the bundle and every nested bundle

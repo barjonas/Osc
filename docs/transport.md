@@ -23,12 +23,12 @@ await sender.SendAsync(message, otherEndPoint, token); // per-call destination, 
 
 Each send encodes the packet into a pooled buffer in one pass. A packet over 65 507 bytes is refused with
 `OscFormatException` before anything is sent. `Send(ReadOnlySpan<byte>)` / `SendAsync(ReadOnlyMemory<byte>)` send
-bytes you have already encoded.
+bytes you have already encoded, and both take an optional `IPEndPoint` destination like the packet overloads.
 
 - **Interface selection.** Binding `LocalEndPoint` to an address on the wanted interface selects it for unicast and
   broadcast and, for IPv4, also for multicast. `MulticastInterface` sets `IP_MULTICAST_IF` from the
   `NetworkInterface` and wins over the bound address. `OscUdpSender.GetInterfaceIndex(nic, family)` exposes the OS
-  index the socket options use.
+  index the socket options use. `OscUdpSenderOptions.ForLocalAddress(address, nic)` sets both in one call.
 - **Broadcast** is enabled by default (`EnableBroadcast`); the destination decides whether it is used.
 - **Multicast loopback** is on by default so a receiver on the same host hears the sender. Winsock applies this on the
   receiving socket and POSIX on the sending one, so both sides set it.

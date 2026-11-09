@@ -30,6 +30,20 @@ public sealed record OscUdpSenderOptions
 
     /// <summary>Dialect used to encode packets.</summary>
     public OscWriterOptions Writer { get; init; } = OscWriterOptions.Default;
+
+    /// <summary>
+    /// Options that send from one network interface: <see cref="LocalEndPoint"/> binds <paramref name="localAddress"/>
+    /// (port 0, so the stack picks one), which selects the outgoing interface for unicast and broadcast, and
+    /// <see cref="MulticastInterface"/> is <paramref name="networkInterface"/>, which sets <c>IP_MULTICAST_IF</c>
+    /// so multicast leaves by the same adapter. Pick the address from the interface's
+    /// <see cref="IPInterfaceProperties.UnicastAddresses"/> in the destination's address family.
+    /// </summary>
+    public static OscUdpSenderOptions ForLocalAddress(IPAddress localAddress, NetworkInterface networkInterface)
+    {
+        ArgumentNullException.ThrowIfNull(localAddress);
+        ArgumentNullException.ThrowIfNull(networkInterface);
+        return new() { LocalEndPoint = new(localAddress, 0), MulticastInterface = networkInterface };
+    }
 }
 
 /// <summary>
@@ -85,10 +99,14 @@ public sealed class OscUdpSender : IDisposable
     }
 
     /// <summary>Sends bytes that are already an encoded packet.</summary>
-    public void Send(ReadOnlySpan<byte> datagram)
+    public void Send(ReadOnlySpan<byte> datagram) => Send(datagram, RemoteEndPoint);
+
+    /// <summary>Sends bytes that are already an encoded packet to <paramref name="destination"/> instead of <see cref="RemoteEndPoint"/>.</summary>
+    public void Send(ReadOnlySpan<byte> datagram, IPEndPoint destination)
     {
+        ArgumentNullException.ThrowIfNull(destination);
         ValidateLength(datagram.Length);
-        _ = _socket.SendTo(datagram, SocketFlags.None, RemoteEndPoint);
+        _ = _socket.SendTo(datagram, SocketFlags.None, destination);
     }
 
     public ValueTask SendAsync(OscPacket packet, CancellationToken cancellationToken = default)
@@ -111,10 +129,15 @@ public sealed class OscUdpSender : IDisposable
     }
 
     /// <summary>Sends bytes that are already an encoded packet.</summary>
-    public async ValueTask SendAsync(ReadOnlyMemory<byte> datagram, CancellationToken cancellationToken = default)
+    public ValueTask SendAsync(ReadOnlyMemory<byte> datagram, CancellationToken cancellationToken = default)
+        => SendAsync(datagram, RemoteEndPoint, cancellationToken);
+
+    /// <summary>Sends bytes that are already an encoded packet to <paramref name="destination"/> instead of <see cref="RemoteEndPoint"/>.</summary>
+    public async ValueTask SendAsync(ReadOnlyMemory<byte> datagram, IPEndPoint destination, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(destination);
         ValidateLength(datagram.Length);
-        _ = await _socket.SendToAsync(datagram, SocketFlags.None, RemoteEndPoint, cancellationToken).ConfigureAwait(false);
+        _ = await _socket.SendToAsync(datagram, SocketFlags.None, destination, cancellationToken).ConfigureAwait(false);
     }
 
     public void Dispose() => _socket.Dispose();
