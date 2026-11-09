@@ -1,0 +1,107 @@
+on:
+  push:
+    branches:
+      - main
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+
+  Build_And_Package:
+    name: Build and package
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+      DOTNET_NOLOGO: true
+      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+      SLN_PATH: .\src\GameshowPro.Osc.slnx
+      PUBLISH_PATH: .\publish
+
+    outputs:
+      semver2_version: ${{ env.NBGV_SemVer2 }}
+      nuget_version: ${{ env.NBGV_NuGetPackageVersion }}
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # avoid shallow clone so nbgv can do its work.
+
+    # global.json pins a .NET 11 release candidate; the action installs a prerelease global.json version as written.
+    - name: Use .NET 11 (global.json)
+      uses: actions/setup-dotnet@v6
+      with:
+        global-json-file: global.json
+
+    - name: Nerdbank.GitVersioning
+      uses: dotnet/nbgv@v0.4.1
+      with:
+        setAllVars: true
+
+    - name: Run tests
+      run: dotnet test $env:SLN_PATH -c Release
+
+    - name: Build packages
+      run: |
+        dotnet pack $env:SLN_PATH --output ${{env.PUBLISH_PATH}} -c Release
+
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: package
+        path: |
+          ${{ env.PUBLISH_PATH }}/*.nupkg
+          ${{ env.PUBLISH_PATH }}/*.snupkg
+        retention-days: 3
+
+  Release_And_Push:
+    name: Release and push packages
+    needs: Build_And_Package
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # For tag creation
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: ./all-packages
+
+    - name: Nerdbank.GitVersioning
+      uses: dotnet/nbgv@v0.4.1
+      with:
+        setAllVars: true
+
+    - name: Add tags
+      shell: pwsh
+      run: |
+        nbgv tag ${{ needs.Build_And_Package.outputs.semver2_version }}
+        git push origin "v${{ needs.Build_And_Package.outputs.semver2_version }}"
+
+    - name: Create GitHub release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ needs.Build_And_Package.outputs.semver2_version }}
+        files: |
+          ./all-packages/**/*.nupkg
+          ./all-packages/**/*.snupkg
+
+    - name: Publish NuGet packages
+      run: |
+        $packages = Get-ChildItem -Path "./all-packages" -Recurse -Filter "*.nupkg"
+        foreach ($package in $packages) {
+          Write-Host "Pushing package: $($package.FullName)"
+          dotnet nuget push $package.FullName --api-key "${{ secrets.GSP_PACKAGE_PAT }}" --source ${{ vars.NUGET_URL }} --skip-duplicate
+          if (-not $?) {
+            Write-Error "Failed to push package: $($package.Name)"
+            exit 1
+          }
+        }

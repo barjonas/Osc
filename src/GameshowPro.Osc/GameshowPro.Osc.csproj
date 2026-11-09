@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <RootNamespace>GameshowPro.Osc</RootNamespace>
+    <PackageId>GameshowPro.Osc</PackageId>
+    <Product>GameshowPro OSC</Product>
+    <Title>GameshowPro OSC</Title>
+    <Description>Allocation-conscious Open Sound Control (OSC 1.0/1.1) packet model, reader, writer and UDP transport, with Ventuz dialect support. Native AOT and WebAssembly compatible, no dependencies.</Description>
+    <PackageTags>osc open-sound-control udp ventuz aot</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <!-- The library runs in Native AOT hosts and on the WebAssembly runtime: every path is reflection-free,
+         and the trim and AOT analyzers run on each build to keep it that way. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <NeutralLanguage>en-US</NeutralLanguage>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Nerdbank.GitVersioning" Version="3.10.94">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="GameshowPro.Osc.Tests" />
+  </ItemGroup>
+</Project>

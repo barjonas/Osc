@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="GameshowPro.Osc/GameshowPro.Osc.csproj" />
+  <Project Path="../tests/GameshowPro.Osc.Tests/GameshowPro.Osc.Tests.csproj" />
+</Solution>

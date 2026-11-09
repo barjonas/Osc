@@ -1,0 +1,32 @@
+<Project>
+  <PropertyGroup>
+    <!-- Compiler and analyzer policy for every project, per the GameshowPro coding standards.
+         Warnings are errors locally and in CI; suppressions belong at the narrowest justified scope. -->
+    <Nullable>enable</Nullable>
+    <!-- Every using directive is global and lives in each project's GlobalUsings.cs. -->
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <LangVersion>15</LangVersion>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Public API XML comments are encouraged, not a build rule. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <Company>Barjonas LLC</Company>
+    <Authors>Hamish Barjonas</Authors>
+    <Copyright>© 2026 Barjonas LLC</Copyright>
+    <RepositoryUrl>https://github.com/gameshowpro/Osc</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <!-- Nerdbank.GitVersioning target caching breaks graph evaluation under dotnet watch. -->
+    <NBGV_CacheMode>none</NBGV_CacheMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Roslynator.Analyzers" Version="5.0.1">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+</Project>
