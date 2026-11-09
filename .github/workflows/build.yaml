@@ -1,3 +1,5 @@
+name: Build
+
 on:
   push:
     branches:
@@ -6,19 +8,20 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+  DOTNET_NOLOGO: true
+
 jobs:
 
   Build_And_Package:
     name: Build and package
     runs-on: windows-latest
     permissions:
-      contents: write
+      contents: read
 
     env:
-      DOTNET_CLI_TELEMETRY_OPTOUT: 1
-      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
-      DOTNET_NOLOGO: true
-      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
       SLN_PATH: .\src\GameshowPro.Osc.slnx
       PUBLISH_PATH: .\publish
 
@@ -27,7 +30,7 @@ jobs:
       nuget_version: ${{ env.NBGV_NuGetPackageVersion }}
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
       with:
         fetch-depth: 0 # avoid shallow clone so nbgv can do its work.
 
@@ -38,7 +41,7 @@ jobs:
         global-json-file: global.json
 
     - name: Nerdbank.GitVersioning
-      uses: dotnet/nbgv@v0.4.1
+      uses: dotnet/nbgv@v0.5.2
       with:
         setAllVars: true
 
@@ -46,16 +49,16 @@ jobs:
       run: dotnet test $env:SLN_PATH -c Release
 
     - name: Build packages
-      run: |
-        dotnet pack $env:SLN_PATH --output ${{env.PUBLISH_PATH}} -c Release
+      run: dotnet pack $env:SLN_PATH --output $env:PUBLISH_PATH -c Release
 
     - name: Upload
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: package
         path: |
           ${{ env.PUBLISH_PATH }}/*.nupkg
           ${{ env.PUBLISH_PATH }}/*.snupkg
+        if-no-files-found: error
         retention-days: 3
 
   Release_And_Push:
@@ -65,36 +68,29 @@ jobs:
     permissions:
       contents: write
 
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0 # For tag creation
+    env:
+      VERSION: ${{ needs.Build_And_Package.outputs.semver2_version }}
 
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: ./all-packages
+    steps:
+    # Needed for global.json, so the dotnet CLI resolves the pinned SDK.
+    - uses: actions/checkout@v7
 
     - name: Use .NET 11 (global.json)
       uses: actions/setup-dotnet@v6
       with:
         global-json-file: global.json
 
-    - name: Nerdbank.GitVersioning
-      uses: dotnet/nbgv@v0.4.1
+    - name: Download all artifacts
+      uses: actions/download-artifact@v8
       with:
-        setAllVars: true
+        path: ./all-packages
 
-    - name: Add tags
-      shell: pwsh
-      run: |
-        nbgv tag ${{ needs.Build_And_Package.outputs.semver2_version }}
-        git push origin "v${{ needs.Build_And_Package.outputs.semver2_version }}"
-
+    # Creates the v<version> tag on the built commit along with the release.
     - name: Create GitHub release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v3
       with:
-        tag_name: v${{ needs.Build_And_Package.outputs.semver2_version }}
+        tag_name: v${{ env.VERSION }}
+        target_commitish: ${{ github.sha }}
         files: |
           ./all-packages/**/*.nupkg
           ./all-packages/**/*.snupkg
@@ -104,8 +100,8 @@ jobs:
         $packages = Get-ChildItem -Path "./all-packages" -Recurse -Filter "*.nupkg"
         foreach ($package in $packages) {
           Write-Host "Pushing package: $($package.FullName)"
-          dotnet nuget push $package.FullName --api-key "${{ secrets.GSP_PACKAGE_PAT }}" --source ${{ vars.NUGET_URL }} --skip-duplicate
-          if (-not $?) {
+          dotnet nuget push $package.FullName --api-key "${{ secrets.GSP_PACKAGE_PAT }}" --source "${{ vars.NUGET_URL }}" --skip-duplicate
+          if ($LASTEXITCODE -ne 0) {
             Write-Error "Failed to push package: $($package.Name)"
             exit 1
           }
